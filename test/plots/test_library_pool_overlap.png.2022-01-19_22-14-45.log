@@ -1,0 +1,9 @@
+INFO [2022-01-19 22:14:45] [[1]]
+INFO [2022-01-19 22:14:45] barcode.list
+INFO [2022-01-19 22:14:45] 
+INFO [2022-01-19 22:14:45] $filename
+INFO [2022-01-19 22:14:45] file.path(plot.dir, "test_library_pool_overlap.png")
+INFO [2022-01-19 22:14:45] 
+INFO [2022-01-19 22:14:45] $imagetype
+INFO [2022-01-19 22:14:45] [1] "png"
+INFO [2022-01-19 22:14:45] 

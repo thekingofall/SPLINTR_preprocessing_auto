@@ -1,0 +1,324 @@
+---
+title: "SPLINTR library barcode preprocessing and analysis template"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+
+#----- Import Packages
+```{r, warning=F, message=F}
+library(ggplot2)
+library(data.table)
+library(dplyr)
+library(assertthat)
+library(seqinr)
+library(fastmatch)
+library(venn)
+library(VennDiagram)
+```
+
+#----- Setup Environment
+```{r}
+# setup environment and output folders
+plot.dir <- "./test/plots"
+results.dir <- "./test/results"
+
+dir.create(plot.dir, showWarnings = F, recursive = T)
+dir.create(results.dir, showWarnings = F, recursive = T)
+
+# samples
+starcode.1 <- "./test/test_starcode_1.txt"
+starcode.2 <- "./test/test_starcode_2.txt"
+
+starcode.1 <- fread(file = starcode.1)
+starcode.2 <- fread(file = starcode.2)
+
+```
+
+#----- Define Common Functions
+This code chunk defines common functions that will be used throughout the analysis
+```{r}
+
+# get object name as string
+getname <- function(v1) {
+    deparse(substitute(v1))
+}
+
+# fasta output from dataframe function
+writeFasta <- function(data, filename){
+    fastaLines = c()
+    for (rowNum in 1:nrow(data)){
+        fastaLines = c(fastaLines, as.character(paste(">", data[rowNum,1], sep = "")))
+        fastaLines = c(fastaLines,as.character(data[rowNum,2]))
+    }
+    fileConn<-file(filename)
+    writeLines(fastaLines, fileConn)
+    close(fileConn)
+}
+
+# Barcode frequency distribution
+plot.barcode.dist <- function(barcodes, samplename){
+    ggplot(barcodes, aes(y=Raw_count, x=seq(1,length(rownames(barcodes))))) +
+        geom_point(stat = "identity", show.legend = F) + scale_y_continuous(trans='log10') +
+        theme_bw() +
+        scale_size_manual(values=c(2,2)) +
+        geom_hline(yintercept = 100, color = "grey40") +
+        xlab("Barcode") +
+        ylab("Count") +
+        ggtitle(paste(samplename, ": Barcode frequency distribution"))
+    ggsave(paste(plot.dir,'/', samplename, "_barcode_frequency_distribution.png", sep = ''), dpi = 300)
+}
+
+# Barcode cumulative sum plot
+plot.barcode.cumsum <- function(barcodes, samplename){
+    sorted <- sort(barcodes$Raw_count, decreasing = T)
+    barcodes <- barcodes[sorted,]
+    colsum <- sum(sorted)
+    colsum.90 <- sum(sorted)*0.9
+    colsum.99 <- sum(sorted)*0.99
+    cumsum <- cumsum(sorted)
+    cumsum <- cumsum/max(cumsum)
+    length(cumsum)
+    b <- seq(1,length(cumsum),1)
+    b <- b/length(cumsum)
+    d <- data.frame(barcode=b, proportion=cumsum)
+    dim(d)
+    
+    ggplot(d, aes(y=proportion, x=barcode)) +
+        geom_point(stat = "identity", show.legend = F) +
+        theme_bw() +
+        scale_size_manual(values=c(2,2)) +
+        xlab("Barcode rank (Proportion)") +
+        ylab("Cumulative Sum (Proportion)") +
+        ggtitle(paste(samplename, ": Barcode cumulative sum"))
+    ggsave(paste(plot.dir, '/', samplename, "_cumulative_sum_distribution.png", sep = ''), dpi = 300)
+}
+
+parse.starcode <- function(sample, samplename, raw.count.threshold = 20, prefix = "test"){
+    #str(sample)
+    samplename <- samplename
+    barcodes <- sample
+    colnames(barcodes) <- c("Barcode", "Raw_count")
+    barcodes$Raw_count <- as.numeric(barcodes$Raw_count)
+    barcodes.out <- barcodes[which(barcodes$Raw_count >= raw.count.threshold),] # set arbitrary cutoff of 20, down from 100
+
+    # Generate rank and proportion information
+    raw.total.count <- sum(barcodes$Raw_count)
+    raw.proportion <- 100*(barcodes$Raw_count/raw.total.count)
+    are_equal(sum(raw.proportion), 100)
+
+    filtered.total.count <- sum(barcodes.out$Raw_count)
+    filtered.proportion <- 100*(barcodes.out$Raw_count/filtered.total.count)
+    are_equal(sum(filtered.proportion), 100)
+
+    filtered.counts.starcode <- sum(barcodes[barcodes$Raw_count >= raw.count.threshold,2])
+    proportion.starcode <- 100*(filtered.counts.starcode/raw.total.count)
+
+    # output barcode library as fasta
+    rank <- seq(1,length(rownames(barcodes.out)))
+    rank <- paste(prefix, "_Barcode_", rank, sep = '')
+    barcodes.out$Rank <- rank
+    fasta.name <- paste(samplename,".fasta", sep = '')
+    #writeFasta(barcodes.out[,c(3,1)], fasta.name)
+    seqinr::write.fasta(sequences = as.list(barcodes.out$Barcode), names = barcodes.out$Rank, file.out =
+                          file.path(results.dir,fasta.name), open = "w")
+
+    # output barcode library as txt
+    write.table(barcodes.out, paste(results.dir, '/', samplename, "_barcodes.txt", sep = ""), quote = F)
+
+    # Plotting
+    num.total <- length(rownames(barcodes))
+    num.filtered <- length(rownames(barcodes.out))
+    prop.filtered <- num.filtered / num.total
+
+    # plot barcode distributions
+    plot.barcode.dist(barcodes, samplename)
+    plot.barcode.dist(barcodes.out, paste(samplename,"_filtered.png", sep = ""))
+
+    # plot barcode cumulative sum plot - Filtered barcodes
+    plot.barcode.cumsum(barcodes, samplename)
+    plot.barcode.cumsum(barcodes.out, paste(samplename,"_filtered.png", sep = ""))
+}
+
+ggplotRegression <- function(fit, title) {
+  ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) +
+    geom_point() +
+    stat_smooth(method = "lm", col = "blue") +
+    ggtitle(title, subtitle = paste("Adj R2 = ",signif(summary(fit)$adj.r.squared, 5),
+                       "Intercept =",signif(fit$coef[[1]],5 ),
+                       " Slope =",signif(fit$coef[[2]], 5),
+                       " P =",signif(summary(fit)$coef[2,4], 5) )) +
+    geom_rug(col=rgb(.5,0,0,alpha=.2)) +
+    theme_bw()
+}
+
+```
+
+
+#------- Analysis
+
+The first step is to run each replicate through the parse starcode function above and plot the abundance and cumulative distribution for each replicate 
+
+Low abundance barcodes (<5 reads, but this is arbitrary) are likely PCR or sequencing artifacts. These are filtered out by the parse_starcode function
+
+
+```{r}
+# set a raw count of 5 to call true barcodes
+parse.starcode(starcode.1, "test-library_1_starcode", raw.count.threshold = 5)
+parse.starcode(starcode.2, "test-library_2_starcode", raw.count.threshold = 5)
+```
+
+Import processed barcode pools - PCR replicate 1
+```{r}
+# PCR replicate 1
+barcodes.starcode.filtered.1 <- as.data.frame(fread(file.path(results.dir,"test-library_1_starcode_barcodes.txt"), header = F))
+rownames(barcodes.starcode.filtered.1) <- barcodes.starcode.filtered.1$V4
+barcodes.starcode.filtered.1$V1 <- NULL
+barcodes.starcode.filtered.1$V4 <- NULL
+colnames(barcodes.starcode.filtered.1) <- c("Barcode", "Raw_Count")
+head(barcodes.starcode.filtered.1)
+```
+
+Import processed barcode pools - PCR replicate 2
+```{r}
+# PCR replicate 2
+barcodes.starcode.filtered.2 <- as.data.frame(fread(file.path(results.dir,"test-library_2_starcode_barcodes.txt"), header = F))
+rownames(barcodes.starcode.filtered.2) <- barcodes.starcode.filtered.2$V4
+barcodes.starcode.filtered.2$V1 <- NULL
+barcodes.starcode.filtered.2$V4 <- NULL
+colnames(barcodes.starcode.filtered.2) <- c("Barcode", "Raw_Count")
+head(barcodes.starcode.filtered.2)
+```
+
+Next we need to determine the overlap between the sequenced PCR replicates of the test library
+
+Looking at the raw (i.e. without filtering for total read abundance) and filtered datasets.
+```{r}
+# Generate Venn diagram of barcode overlap - Raw Barcode pools
+barcode.list <- list("test_pool_1" = starcode.1$V1,
+                     "test_pool_2" = starcode.2$V1)
+venn.diagram(barcode.list, filename = file.path(plot.dir,"test_library_pool_overlap.png"), imagetype = "png")
+
+overlap <- calculate.overlap(barcode.list)
+venn::venn(barcode.list)
+```
+
+Look at overlapping and unique barcode numbers
+
+Common barcodes
+```{r}
+common.barcodes <- unlist(overlap["a3"])
+length(common.barcodes)
+```
+
+unique - PCR1
+```{r}
+ol <- starcode.1$V1 %in% common.barcodes
+pool1.unique.barcodes <- starcode.1$V1[!ol]
+length(pool1.unique.barcodes)
+```
+
+unique - PCR2
+```{r}
+ol <- starcode.2$V1 %in% common.barcodes
+pool2.unique.barcodes <- starcode.2$V1[!ol]
+length(pool2.unique.barcodes)
+```
+
+Generate Venn diagram of barcode overlap - Filtered Barcodes
+```{r}
+# Venn diagram of barcode overlap - Filtered Barcodes
+barcode.list <- list("test_pool_1" = barcodes.starcode.filtered.1$Barcode,
+                     "test_pool_2" = barcodes.starcode.filtered.2$Barcode)
+venn.diagram(barcode.list, filename = file.path(plot.dir, "test_library_pools_filtered_overlap.png"), imagetype = "png")
+venn::venn(barcode.list)
+```
+
+```{r}
+overlap <- calculate.overlap(barcode.list)
+str(overlap)
+names(overlap)
+
+common.barcodes.filtered <- unlist(overlap["a3"])
+length(common.barcodes.filtered)
+
+```
+
+Finally we can generate a set of the common barcodes and their abundances and use this as a reference
+set for the barcode library.
+Sequencing depth normalised counts for each barcode should be similar between technical replicates.
+
+```{r}
+# Generate final output table of filtered barcodes
+common.barcodes.filtered <- as.data.frame(common.barcodes.filtered)
+
+# inner join TR 1 and TR2
+common.barcodes.filtered <- inner_join(common.barcodes.filtered, barcodes.starcode.filtered.1, by = (c("common.barcodes.filtered" = "Barcode")))
+common.barcodes.filtered <- inner_join(common.barcodes.filtered, barcodes.starcode.filtered.2, by = (c("common.barcodes.filtered" = "Barcode")))
+# calculate CPM for each replicate
+common.barcodes.filtered <- common.barcodes.filtered %>% 
+    mutate(TR1_CPM = Raw_Count.x/sum(Raw_Count.x)*10e6)
+common.barcodes.filtered <- common.barcodes.filtered %>% 
+    mutate(TR2_CPM = Raw_Count.y/sum(Raw_Count.y)*10e6)
+head(common.barcodes.filtered)
+
+# calculate average CPM
+head(common.barcodes.filtered)
+dim(common.barcodes.filtered)
+common.barcodes.filtered <- common.barcodes.filtered %>% as_tibble() %>% rowwise() %>% mutate(Mean_CPM = mean(c(TR1_CPM, TR2_CPM), na.rm=T))
+
+# calculate difference in CPM
+common.barcodes.filtered <- common.barcodes.filtered %>% rowwise() %>% mutate(Diff = TR1_CPM - TR2_CPM)
+
+colnames(common.barcodes.filtered) <- c("Barcode", "Filtered_Count_TR1", "Filtered_Count_TR2", "CPM_TR1", "CPM_TR2", "Mean_CPM", "CPM_Diff")
+head(common.barcodes.filtered)
+```
+
+Histogram of CPM differences between PCR replicates
+```{r}
+min.max <- summary(common.barcodes.filtered$CPM_Diff)
+min.max
+
+pdf(file.path(plot.dir,"test_difference_in_CPMs.pdf"), width = 6, height = 5)
+hist(common.barcodes.filtered$CPM_Diff, main = "Distribution of CPM differences between PCR replicates")
+dev.off()
+hist(common.barcodes.filtered$CPM_Diff, main = "Distribution of CPM differences between PCR replicates")
+```
+
+Scatter plot
+```{r}
+fit <- lm(common.barcodes.filtered$CPM_TR1 ~ common.barcodes.filtered$CPM_TR2)
+p <- ggplotRegression(fit, "Test Barcode Library - CPM differences between PCR replicates")
+ggsave(file.path(plot.dir,"Test_filtered_barcode_CPMs_scatterplot.pdf"), width = 6, height = 5)
+p
+```
+
+
+```{r}
+# filter largest CPM differences
+
+# order based on CPM average
+common.barcodes.filtered <- common.barcodes.filtered[order(common.barcodes.filtered$Mean_CPM, decreasing = T),]
+
+# name Barcodes by rank abundance in pool
+common.barcodes.filtered <- as.data.frame(common.barcodes.filtered)  
+rownames(common.barcodes.filtered) <- paste("Test_Barcode_", rownames(common.barcodes.filtered), sep = '')
+head(common.barcodes.filtered)
+
+# output reference dataset
+write.table(common.barcodes.filtered, quote = F, file = file.path(results.dir,"./test_barcode_reference_library.txt"))
+
+# output reference fasta file of barcodes
+seqinr::write.fasta(sequences = as.list(common.barcodes.filtered$Barcode), names = rownames(common.barcodes.filtered), file.out = file.path(results.dir,"./test_barcode_reference_library.fasta"))
+
+```
+
+#------- Session info
+```{r}
+sessionInfo()
+```
+
+
